@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>doclive</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6b66;
+  --line: #deded8; --accent: #2f5fd0; --accent-ink: #ffffff;
+  --warn-bg: #fff4d6; --warn-ink: #6b4a00; --bad: #b3261e; --good: #2e7d32;
+  --mine: #eef3ff; --theirs: #f3f3ef; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --panel: #1f1f1d; --ink: #e8e8e3; --muted: #9a9a93;
+    --line: #34342f; --accent: #7aa2ff; --accent-ink: #0d0d0c;
+    --warn-bg: #3a2f10; --warn-ink: #ffd98a; --bad: #ff8a80; --good: #8bd48f;
+    --mine: #1f2a44; --theirs: #262623;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: grid; grid-template-rows: auto 1fr; grid-template-columns: 1fr 360px;
+  grid-template-areas: "bar bar" "main chat";
+}
+#bar {
+  grid-area: bar; display: flex; align-items: center; gap: 12px;
+  padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+#bar .name { font-weight: 600; }
+#page { font-family: var(--mono); color: var(--muted); }
+.toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.toggle button {
+  border: 0; background: transparent; color: var(--ink); padding: 5px 12px; cursor: pointer; font: inherit;
+}
+.toggle button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+#build { margin-left: auto; color: var(--muted); font-size: 13px; }
+#build.bad { color: var(--bad); cursor: pointer; }
+#build.good { color: var(--good); }
+main { grid-area: main; position: relative; min-width: 0; min-height: 0; }
+#frame { width: 100%; height: 100%; border: 0; background: #fff; }
+#source { position: absolute; inset: 0; overflow: auto; padding: 16px 20px 80px; display: none; }
+body.source #source { display: block; }
+body.source #frame { visibility: hidden; }
+#buildlog {
+  display: none; position: absolute; left: 12px; right: 12px; bottom: 12px; max-height: 45%;
+  overflow: auto; background: var(--panel); border: 1px solid var(--bad); border-radius: 8px;
+  padding: 10px 12px; font: 12px/1.4 var(--mono); white-space: pre-wrap; z-index: 5;
+}
+#buildlog.open { display: block; }
+.item {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  margin: 0 auto 14px; max-width: 900px;
+}
+.item.dirty { border-color: var(--accent); }
+.item header {
+  display: flex; align-items: center; gap: 10px; padding: 7px 10px 7px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.item .title { font-family: var(--mono); font-weight: 600; }
+.item .path { font-family: var(--mono); color: var(--muted); font-size: 12px; }
+.item .status { margin-left: auto; color: var(--muted); font-size: 12px; }
+.item button, #send {
+  font: inherit; font-size: 13px; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line); background: transparent; color: var(--ink);
+}
+.item button.save { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.item button.save:disabled { opacity: .35; cursor: default; }
+.item textarea {
+  display: block; width: 100%; border: 0; resize: none; padding: 10px 12px; min-height: 3em;
+  background: transparent; color: var(--ink); font: 13px/1.5 var(--mono); outline: none;
+  overflow: hidden;
+}
+.conflict {
+  display: none; padding: 8px 12px; background: var(--warn-bg); color: var(--warn-ink);
+  font-size: 13px; gap: 8px; align-items: center; flex-wrap: wrap;
+}
+.item.conflicted .conflict { display: flex; }
+#chat {
+  grid-area: chat; display: flex; flex-direction: column; min-height: 0;
+  border-left: 1px solid var(--line); background: var(--panel);
+}
+#chat h2 { font-size: 13px; margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-weight: 600; }
+#log { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.msg { border-radius: 10px; padding: 8px 10px; background: var(--theirs); }
+.msg.owner { background: var(--mine); }
+.msg .who { font-size: 12px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; }
+.msg .who b { color: var(--ink); }
+.msg .text { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 3px; }
+#compose { border-top: 1px solid var(--line); padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+#context { font-size: 12px; color: var(--muted); font-family: var(--mono); min-height: 1.2em; }
+#input {
+  width: 100%; min-height: 70px; resize: vertical; padding: 8px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: inherit;
+}
+#send { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.empty { color: var(--muted); max-width: 900px; margin: 30px auto; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <span class="name">doclive</span>
+  <span id="page">index</span>
+  <span class="toggle" role="group" aria-label="View">
+    <button id="show-rendered" aria-pressed="true">Rendered</button>
+    <button id="show-source" aria-pressed="false">Source</button>
+  </span>
+  <span id="build">starting</span>
+</div>
+<main>
+  <iframe id="frame" src="/site/index.html" title="The rendered site"></iframe>
+  <div id="source"></div>
+  <div id="buildlog"></div>
+</main>
+<aside id="chat">
+  <h2>Conversation with Claudia</h2>
+  <div id="log"></div>
+  <div id="compose">
+    <div id="context"></div>
+    <textarea id="input" placeholder="@claudia … (⌘/Ctrl + Enter sends)"></textarea>
+    <button id="send">Send</button>
+  </div>
+</aside>
+<script>
+const $ = (s, root = document) => root.querySelector(s);
+const frame = $("#frame");
+const sourcePane = $("#source");
+let page = "index";
+let mode = "rendered";
+let editors = new Map();        // key -> editor state of the page shown
+const drafts = new Map();       // key -> {text, base}: unsaved text kept across pages
+let restoreScroll = null;
+let focusedKey = null;
+
+const keyOf = item => item.path + "::" + (item.qualname ?? "");
+
+function pageOf(pathname) {
+  let p = decodeURIComponent(pathname).replace(/^\/site\/?/, "").replace(/\.html$/, "");
+  if (p === "" || p.endsWith("/")) p += "index";
+  return p;
+}
+
+// ---- The rendered site ----
+
+frame.addEventListener("load", () => {
+  let newPage;
+  try { newPage = pageOf(frame.contentWindow.location.pathname); } catch { return; }
+  if (restoreScroll !== null) {
+    frame.contentWindow.scrollTo(0, restoreScroll);
+    restoreScroll = null;
+  }
+  frame.contentWindow.addEventListener("scroll", updateContext, { passive: true });
+  if (newPage !== page) {
+    page = newPage;
+    $("#page").textContent = page;
+    if (mode === "source") loadSource();
+  }
+  updateContext();
+});
+
+// The anchor of the documented object at the top of the rendered page.
+function renderedAnchor() {
+  let doc;
+  try { doc = frame.contentDocument; } catch { return null; }
+  if (!doc) return null;
+  let best = null;
+  for (const el of doc.querySelectorAll("dt[id], span[id^='module-'], section[id]")) {
+    const top = el.getBoundingClientRect().top;
+    if (top <= 90) best = el.id; else break;
+  }
+  return best;
+}
+
+// ---- The sources ----
+
+async function loadSource(scrollTo) {
+  const res = await fetch("/api/source?page=" + encodeURIComponent(page));
+  const items = await res.json();
+  saveDrafts();
+  editors = new Map();
+  sourcePane.replaceChildren();
+  if (!items.length) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "This page has no source file that doclive can edit.";
+    sourcePane.append(p);
+    return;
+  }
+  for (const item of items) sourcePane.append(makeEditor(item));
+  requestAnimationFrame(() => {
+    for (const ed of editors.values()) autosize(ed.area);
+    if (scrollTo) {
+      const ed = [...editors.values()].find(e => e.item.anchor === scrollTo);
+      if (ed) ed.el.scrollIntoView({ block: "start" });
+    }
+  });
+}
+
+function saveDrafts() {
+  for (const [key, ed] of editors) {
+    if (ed.area.value !== ed.base) drafts.set(key, { text: ed.area.value, base: ed.base });
+    else drafts.delete(key);
+  }
+}
+
+function makeEditor(item) {
+  const key = keyOf(item);
+  const el = document.createElement("section");
+  el.className = "item";
+  el.innerHTML = `
+    <header>
+      <span class="title"></span><span class="path"></span>
+      <span class="status"></span>
+      <button class="save" disabled>Save</button>
+    </header>
+    <div class="conflict">
+      <span>The file changed while you were editing this.</span>
+      <button class="take">Take the file's version</button>
+      <button class="keep">Keep mine and save it</button>
+    </div>
+    <textarea spellcheck="true"></textarea>`;
+  $(".title", el).textContent = item.kind === "page" ? "page" : item.title;
+  $(".path", el).textContent = item.path;
+  const area = $("textarea", el);
+  const draft = drafts.get(key);
+  const ed = { item, el, area, base: item.text, onDisk: item.text };
+  if (draft && draft.base === item.text) {
+    area.value = draft.text;
+  } else if (draft) {
+    area.value = draft.text;
+    ed.onDisk = item.text;
+    ed.base = draft.base;
+    el.classList.add("conflicted");
+  } else {
+    area.value = item.text;
+  }
+  editors.set(key, ed);
+  refreshDirty(ed);
+  area.addEventListener("input", () => { autosize(area); refreshDirty(ed); });
+  area.addEventListener("focus", () => { focusedKey = key; updateContext(); });
+  area.addEventListener("keydown", e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); save(ed); }
+  });
+  $(".save", el).addEventListener("click", () => save(ed));
+  $(".take", el).addEventListener("click", () => {
+    ed.base = ed.onDisk; area.value = ed.onDisk;
+    el.classList.remove("conflicted"); drafts.delete(key); autosize(area); refreshDirty(ed);
+  });
+  $(".keep", el).addEventListener("click", () => {
+    ed.base = ed.onDisk; el.classList.remove("conflicted"); save(ed);
+  });
+  return el;
+}
+
+function refreshDirty(ed) {
+  const dirty = ed.area.value !== ed.base;
+  ed.el.classList.toggle("dirty", dirty);
+  $(".save", ed.el).disabled = !dirty;
+  $(".status", ed.el).textContent = dirty ? "not saved" : "";
+}
+
+function autosize(area) {
+  area.style.height = "auto";
+  area.style.height = area.scrollHeight + 2 + "px";
+}
+
+async function save(ed) {
+  if (ed.area.value === ed.base) return;
+  $(".status", ed.el).textContent = "saving";
+  const res = await fetch("/api/save", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: ed.item.path, qualname: ed.item.qualname, base: ed.base, text: ed.area.value }),
+  });
+  const body = await res.json();
+  if (res.ok) {
+    ed.base = ed.onDisk = body.text;
+    if (ed.area.value !== body.text && document.activeElement !== ed.area) ed.area.value = body.text;
+    drafts.delete(keyOf(ed.item));
+    ed.el.classList.remove("conflicted");
+    refreshDirty(ed);
+    $(".status", ed.el).textContent = "saved";
+  } else if (res.status === 409) {
+    ed.onDisk = body.current;
+    ed.el.classList.add("conflicted");
+    $(".status", ed.el).textContent = "not saved";
+  } else {
+    $(".status", ed.el).textContent = "refused: " + body.error;
+  }
+}
+
+// What the files hold now, after an edit made outside this tab.
+async function refreshFromDisk(paths) {
+  if (mode !== "source") return;
+  const touched = [...editors.values()].some(ed => paths.includes(ed.item.path));
+  if (!touched) return;
+  const items = await (await fetch("/api/source?page=" + encodeURIComponent(page))).json();
+  const fresh = new Map(items.map(i => [keyOf(i), i]));
+  const sameKeys = fresh.size === editors.size && [...fresh.keys()].every(k => editors.has(k));
+  if (!sameKeys) { loadSource(); return; }
+  for (const [key, ed] of editors) {
+    const text = fresh.get(key).text;
+    if (text === ed.base) continue;
+    if (ed.area.value === ed.base) {
+      ed.base = ed.onDisk = text; ed.area.value = text;
+      autosize(ed.area); refreshDirty(ed);
+      $(".status", ed.el).textContent = "updated from the file";
+    } else if (text !== ed.area.value) {
+      ed.onDisk = text; ed.el.classList.add("conflicted");
+    } else {
+      ed.base = ed.onDisk = text; refreshDirty(ed);
+    }
+  }
+}
+
+// The editor being typed in, when it is in view, or else the one at the top
+// of the source pane.
+function sourceAnchor() {
+  const pane = sourcePane.getBoundingClientRect();
+  const focused = focusedKey && editors.get(focusedKey);
+  if (focused && document.activeElement === focused.area) {
+    const r = focused.el.getBoundingClientRect();
+    if (r.bottom > pane.top && r.top < pane.bottom) return focused.item.anchor;
+  }
+  const top = pane.top;
+  let best = null;
+  for (const ed of editors.values()) {
+    if (ed.el.getBoundingClientRect().top - top <= 60) best = ed; else break;
+  }
+  return best && best.item.anchor;
+}
+
+// ---- The toggle ----
+
+function setMode(next) {
+  if (next === mode) return;
+  if (next === "source") {
+    const anchor = renderedAnchor();
+    mode = "source";
+    document.body.classList.add("source");
+    loadSource(anchor);
+  } else {
+    const anchor = sourceAnchor();
+    saveDrafts();
+    mode = "rendered";
+    document.body.classList.remove("source");
+    if (anchor) {
+      try { frame.contentDocument.getElementById(anchor)?.scrollIntoView({ block: "start", behavior: "instant" }); } catch {}
+    }
+  }
+  $("#show-rendered").setAttribute("aria-pressed", mode === "rendered");
+  $("#show-source").setAttribute("aria-pressed", mode === "source");
+  updateContext();
+}
+$("#show-rendered").addEventListener("click", () => setMode("rendered"));
+$("#show-source").addEventListener("click", () => setMode("source"));
+
+// ---- The build ----
+
+function showBuild(state) {
+  const b = $("#build");
+  b.className = "";
+  $("#buildlog").classList.remove("open");
+  if (state.type === "building") { b.textContent = "building"; return; }
+  if (state.ok) {
+    b.className = "good";
+    b.textContent = `built in ${state.seconds} s`;
+  } else if (state.ok === false) {
+    b.className = "bad";
+    b.textContent = "the build failed: show the log";
+    $("#buildlog").textContent = state.log;
+  }
+}
+$("#build").addEventListener("click", () => {
+  if ($("#build").classList.contains("bad")) $("#buildlog").classList.toggle("open");
+});
+
+// ---- The conversation ----
+
+function context() {
+  const ctx = { page, mode };
+  if (mode === "source" && focusedKey && editors.has(focusedKey)) {
+    const ed = editors.get(focusedKey);
+    ctx.path = ed.item.path;
+    if (ed.item.qualname !== null) ctx.object = ed.item.anchor;
+  } else if (mode === "rendered") {
+    const anchor = renderedAnchor();
+    if (anchor) ctx.object = anchor;
+  }
+  return ctx;
+}
+
+function updateContext() {
+  const ctx = context();
+  $("#context").textContent = "about " + page + (ctx.object ? " · " + ctx.object : "");
+}
+
+function addMessage(m) {
+  const div = document.createElement("div");
+  div.className = "msg " + (m.from === "owner" ? "owner" : "claudia");
+  const who = document.createElement("div");
+  who.className = "who";
+  const name = document.createElement("b");
+  name.textContent = m.from === "owner" ? "You" : "Claudia";
+  const when = document.createElement("span");
+  when.textContent = (m.time || "").slice(11, 16);
+  who.append(name, when);
+  const c = m.context || {};
+  if (c.page) {
+    const about = document.createElement("span");
+    about.textContent = "· " + c.page + (c.object ? " · " + c.object : "");
+    who.append(about);
+  }
+  const text = document.createElement("div");
+  text.className = "text";
+  text.textContent = m.text;
+  div.append(who, text);
+  $("#log").append(div);
+  $("#log").scrollTop = $("#log").scrollHeight;
+}
+
+async function send() {
+  const text = $("#input").value.trim();
+  if (!text) return;
+  $("#input").value = "";
+  await fetch("/api/messages", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from: "owner", text, context: context() }),
+  });
+}
+$("#send").addEventListener("click", send);
+$("#input").addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); send(); }
+});
+
+// ---- Events from the server ----
+
+async function start() {
+  for (const m of await (await fetch("/api/messages")).json()) addMessage(m);
+  showBuild(await (await fetch("/api/build")).json());
+  const events = new EventSource("/api/events");
+  events.onmessage = e => {
+    const ev = JSON.parse(e.data);
+    if (ev.type === "message") addMessage(ev.message);
+    else if (ev.type === "changed") refreshFromDisk(ev.paths);
+    else if (ev.type === "building") showBuild(ev);
+    else if (ev.type === "built") {
+      showBuild(ev);
+      if (ev.ok) {
+        try { restoreScroll = frame.contentWindow.scrollY; } catch {}
+        frame.contentWindow.location.reload();
+      }
+    }
+  };
+  events.onerror = () => { $("#build").textContent = "the server is not answering"; };
+  events.onopen = () => {};
+}
+window.addEventListener("beforeunload", e => {
+  saveDrafts();
+  if (drafts.size) { e.preventDefault(); e.returnValue = ""; }
+});
+start();
+</script>
+</body>
+</html>
