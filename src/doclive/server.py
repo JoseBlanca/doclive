@@ -220,7 +220,7 @@ class Messages:
 
 def _fingerprints(project: Project) -> dict[Path, float]:
     found = {}
-    for pattern in ("**/*.md", "**/*.rst", "**/*.py"):
+    for pattern in ("**/*.md", "**/*.rst", "**/*.py", "**/*.html", "**/*.css"):
         for path in project.docs.glob(pattern):
             if project.build not in path.parents:
                 found[path] = path.stat().st_mtime
@@ -247,7 +247,9 @@ def watch(project: Project, hub: Hub, messages: Messages) -> None:
         seen = now
         rels = sorted(project.rel(p) for p in changed if p.exists())
         hub.publish({"type": "changed", "paths": rels})
-        full = any(p.suffix == ".py" and project.python in p.parents for p in changed)
+        # A docstring, the configuration or a template can change every page,
+        # and Sphinx only notices a changed page file on its own.
+        full = any(p.suffix not in (".md", ".rst") for p in changed)
         hub.publish({"type": "building"})
         hub.publish({"type": "built", **project.run_build(full)})
 
@@ -258,6 +260,12 @@ def make_handler(project: Project, hub: Hub, messages: Messages):
 
         def log_message(self, format, *args):
             pass
+
+        def handle(self):
+            try:
+                super().handle()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def send(self, status, body: bytes, content_type: str) -> None:
             self.send_response(status)
