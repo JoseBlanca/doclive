@@ -154,6 +154,8 @@ frame.addEventListener("load", () => {
     restoreScroll = null;
   }
   frame.contentWindow.addEventListener("scroll", updateContext, { passive: true });
+  blockEditors.clear();
+  armFrame();
   if (newPage !== page) {
     page = newPage;
     $("#page").textContent = page;
@@ -173,6 +175,204 @@ function renderedAnchor() {
     if (top <= 90) best = el.id; else break;
   }
   return best;
+}
+
+// ---- Editing a block where it is rendered ----
+
+const BLOCK = /\bdlb-(\d+)\b/;
+const blockEditors = new Set();   // the editors open in the rendered page
+let pendingReload = false;
+
+const FRAME_CSS = `
+[class*="dlb-"]:hover { outline: 1px dashed var(--color-foreground-border, #999); outline-offset: 3px; }
+#dl-pencil {
+  position: absolute; display: none; z-index: 50; width: 24px; height: 24px; padding: 0;
+  border: 1px solid var(--color-background-border, #ccc); border-radius: 6px;
+  background: var(--color-background-primary, #fff); color: var(--color-foreground-secondary, #555);
+  cursor: pointer; font-size: 14px; line-height: 1;
+}
+#dl-pencil:hover { color: var(--color-brand-primary, #2f5fd0); border-color: currentColor; }
+.dl-editor {
+  border: 1px solid var(--color-brand-primary, #2f5fd0); border-radius: 8px; margin: .75rem 0;
+  background: var(--color-background-secondary, #f8f8f8);
+}
+.dl-editor textarea {
+  display: block; width: 100%; box-sizing: border-box; border: 0; outline: 0; resize: none;
+  overflow: hidden; background: transparent; color: var(--color-foreground-primary, #111);
+  font: .85rem/1.5 var(--font-stack--monospace, monospace); padding: .6rem .75rem;
+}
+.dl-bar {
+  display: flex; gap: .5rem; align-items: center; padding: .35rem .5rem .35rem .75rem;
+  border-top: 1px solid var(--color-background-border, #ddd);
+  font: .75rem var(--font-stack, sans-serif); color: var(--color-foreground-muted, #666);
+}
+.dl-bar .dl-where { font-family: var(--font-stack--monospace, monospace); }
+.dl-bar .dl-status { margin-left: auto; }
+.dl-bar button {
+  font: inherit; padding: .15rem .55rem; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--color-background-border, #ccc); background: transparent; color: inherit;
+}
+.dl-bar button.dl-save { background: var(--color-brand-primary, #2f5fd0); color: #fff; border-color: transparent; }
+.dl-flash {
+  position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 99;
+  background: #222; color: #fff; padding: .5rem .8rem; border-radius: 8px;
+  font: .8rem var(--font-stack, sans-serif);
+}`;
+
+function blockOf(target) {
+  const el = target.closest && target.closest('[class*="dlb-"]');
+  return el && BLOCK.test(el.className) ? el : null;
+}
+
+// Put the pencil and the double-click into the page the frame just loaded.
+function armFrame() {
+  let doc;
+  try { doc = frame.contentDocument; } catch { return; }
+  if (!doc || !doc.body || doc.getElementById("dl-style")) return;
+  const style = doc.createElement("style");
+  style.id = "dl-style";
+  style.textContent = FRAME_CSS;
+  doc.head.append(style);
+  const pencil = doc.createElement("button");
+  pencil.id = "dl-pencil";
+  pencil.textContent = "\u270E";
+  pencil.title = "Edit the source of this block (or double-click it)";
+  doc.body.append(pencil);
+  let hovered = null;
+  doc.addEventListener("mouseover", e => {
+    const el = e.target === pencil ? null : blockOf(e.target);
+    // The pencil stands beside the block, so it stays when the pointer
+    // leaves the block on its way to it.
+    if (!el || el === hovered) return;
+    hovered = el;
+    const r = el.getBoundingClientRect();
+    const view = doc.defaultView;
+    pencil.style.display = "block";
+    pencil.style.top = r.top + view.scrollY + "px";
+    pencil.style.left = Math.max(2, r.left + view.scrollX - 30) + "px";
+  });
+  pencil.addEventListener("click", () => {
+    pencil.style.display = "none";
+    if (hovered) openBlock(hovered);
+  });
+  doc.addEventListener("dblclick", e => {
+    if (e.target.closest(".dl-editor")) return;
+    const el = blockOf(e.target);
+    if (!el) return;
+    e.preventDefault();
+    doc.getSelection()?.removeAllRanges();
+    pencil.style.display = "none";
+    openBlock(el);
+  });
+}
+
+function flash(doc, text) {
+  const note = doc.createElement("div");
+  note.className = "dl-flash";
+  note.textContent = text;
+  doc.body.append(note);
+  setTimeout(() => note.remove(), 3500);
+}
+
+async function openBlock(el) {
+  if (el.dataset.dlEditing) return;
+  const doc = el.ownerDocument;
+  const n = BLOCK.exec(el.className)[1];
+  const res = await fetch(`/api/block?page=${encodeURIComponent(page)}&n=${n}`);
+  const block = await res.json();
+  if (!res.ok) {
+    flash(doc, block.error === "stale"
+      ? "The page is being rebuilt. Try again in a moment."
+      : "This block cannot be edited here: " + block.error);
+    return;
+  }
+  const box = doc.createElement("div");
+  box.className = "dl-editor";
+  const area = doc.createElement("textarea");
+  area.value = block.text;
+  area.spellcheck = true;
+  const bar = doc.createElement("div");
+  bar.className = "dl-bar";
+  const where = doc.createElement("span");
+  where.className = "dl-where";
+  where.textContent = block.path + (block.qualname ? " \u00B7 " + block.qualname : "")
+    + " \u00B7 " + (block.start === block.end ? "line " + block.start : `lines ${block.start}\u2013${block.end}`);
+  const status = doc.createElement("span");
+  status.className = "dl-status";
+  const cancelButton = doc.createElement("button");
+  cancelButton.textContent = "Cancel (Esc)";
+  const saveButton = doc.createElement("button");
+  saveButton.className = "dl-save";
+  saveButton.textContent = "Save (\u2318\u21B5)";
+  bar.append(where, status, cancelButton, saveButton);
+  box.append(area, bar);
+  el.before(box);
+  el.dataset.dlEditing = "1";
+  el.style.display = "none";
+  const ed = { el, box, area, block, state: "open" };
+  blockEditors.add(ed);
+  const fit = () => { area.style.height = "auto"; area.style.height = area.scrollHeight + 2 + "px"; };
+  fit();
+  area.focus();
+  updateContext();
+
+  const close = () => {
+    box.remove();
+    el.style.display = "";
+    delete el.dataset.dlEditing;
+    blockEditors.delete(ed);
+    updateContext();
+    reloadIfWaiting();
+  };
+  const cancel = () => {
+    if (ed.state === "saved") return;
+    if (area.value !== block.text && !doc.defaultView.confirm("Discard your changes to this block?")) return;
+    close();
+  };
+  const save = async () => {
+    if (ed.state !== "open") return;
+    if (area.value === block.text) { close(); return; }
+    status.textContent = "saving";
+    const saved = await fetch("/api/save_block", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: block.path, qualname: block.qualname, start: block.start, end: block.end,
+        base: block.text, text: area.value,
+      }),
+    });
+    if (saved.ok) {
+      ed.state = "saved";
+      area.readOnly = true;
+      saveButton.disabled = cancelButton.disabled = true;
+      status.textContent = "saved; rendering";
+    } else {
+      const body = await saved.json();
+      status.textContent = saved.status === 409
+        ? "The source changed under this block. Copy your text, cancel, and open the block again."
+        : "refused: " + body.error;
+    }
+  };
+  area.addEventListener("input", fit);
+  area.addEventListener("focus", updateContext);
+  area.addEventListener("keydown", e => {
+    if ((e.metaKey || e.ctrlKey) && (e.key === "Enter" || e.key === "s")) { e.preventDefault(); save(); }
+    else if (e.key === "Escape") { e.preventDefault(); cancel(); }
+  });
+  saveButton.addEventListener("click", save);
+  cancelButton.addEventListener("click", cancel);
+}
+
+function reloadFrame() {
+  try { restoreScroll = frame.contentWindow.scrollY; } catch {}
+  frame.contentWindow.location.reload();
+}
+
+// A rebuild that arrives while a block is being edited waits for it.
+function reloadIfWaiting() {
+  if (pendingReload && ![...blockEditors].some(ed => ed.state === "open")) {
+    pendingReload = false;
+    reloadFrame();
+  }
 }
 
 // ---- The sources ----
@@ -387,15 +587,25 @@ function context() {
     ctx.path = ed.item.path;
     if (ed.item.qualname !== null) ctx.object = ed.item.anchor;
   } else if (mode === "rendered") {
-    const anchor = renderedAnchor();
-    if (anchor) ctx.object = anchor;
+    let active = null;
+    try { active = frame.contentDocument.activeElement; } catch {}
+    const ed = [...blockEditors].find(e => e.area === active);
+    if (ed) {
+      ctx.path = ed.block.path;
+      ctx.lines = [ed.block.start, ed.block.end];
+      if (ed.block.qualname !== null) ctx.object = ed.block.qualname || ed.block.path;
+    } else {
+      const anchor = renderedAnchor();
+      if (anchor) ctx.object = anchor;
+    }
   }
   return ctx;
 }
 
 function updateContext() {
   const ctx = context();
-  $("#context").textContent = "about " + page + (ctx.object ? " · " + ctx.object : "");
+  $("#context").textContent = "about " + page + (ctx.object ? " · " + ctx.object : "")
+    + (ctx.lines ? ` · lines ${ctx.lines[0]}–${ctx.lines[1]}` : "");
 }
 
 function addMessage(m) {
@@ -450,8 +660,12 @@ async function start() {
     else if (ev.type === "built") {
       showBuild(ev);
       if (ev.ok) {
-        try { restoreScroll = frame.contentWindow.scrollY; } catch {}
-        frame.contentWindow.location.reload();
+        if ([...blockEditors].some(ed => ed.state === "open")) {
+          pendingReload = true;
+          $("#build").textContent += "; the page refreshes when you close the editor";
+        } else {
+          reloadFrame();
+        }
       }
     }
   };

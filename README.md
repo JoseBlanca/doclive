@@ -5,6 +5,21 @@ the rendered site, an editor of the sources behind the page on screen, and
 a conversation with Claude. A toggle switches the page between Rendered
 and Source.
 
+In Rendered, a paragraph, a list, a code block or a title can be edited
+where it stands: double-click it, or click the pencil that appears beside
+it, and the block is replaced by its source, the lines of the Markdown
+file or of the docstring that it was rendered from. Cmd+Enter saves, Esc
+cancels, and when the site is built again, in about 2 s, the page shows
+the block rendered. A rebuild that someone else's change causes while a
+block is open waits until the editor is closed. A signature and the
+sidebar have no text of their own and do not respond.
+
+doclive knows the lines of each block from a Sphinx extension of its own,
+`doclive_blocks`, which it loads into the build of the project without the
+project's `conf.py` naming it. On popnei's ten pages, 583 of the 585 blocks
+are editable; the other two are text that Sphinx takes from Python's own
+`typing.Literal`.
+
 In Source, the page shows:
 - its own Markdown or reST file;
 - the docstring of every module, class, function, method and attribute

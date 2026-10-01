@@ -21,9 +21,24 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from doclive.blocks import block_end, replace_lines
 from doclive.docstrings import find_docstrings, replace_docstring
 
 STATIC = Path(__file__).parent / "static"
+SPHINXEXT = Path(__file__).parent / "sphinxext"
+# Sphinx is started through this, in the Python of the project, so that the
+# build loads doclive's extension as one of Sphinx's own and the project's
+# conf.py need not name it.
+BOOT = """
+import sys
+sys.path.insert(0, sys.argv.pop(1))
+import sphinx.application
+sphinx.application.builtin_extensions = (
+    *sphinx.application.builtin_extensions, "doclive_blocks")
+from sphinx.cmd.build import main
+sys.exit(main(sys.argv[1:]))
+"""
+DOCSTRING_OF = ":docstring of "
 AUTOMODULE = re.compile(r"^(?:\.\. automodule::|```\{automodule\})\s+(\S+)", re.M)
 
 
@@ -134,14 +149,75 @@ class Project:
         os.replace(tmp, path)
         return self.current_text(rel, qualname)
 
+    # --- The blocks of a rendered page ---
+
+    def block(self, page: str, n: int) -> dict:
+        """The source lines of block `n` of `page`: the file, the
+        docstring when it is one, the lines and their text.
+
+        It raises LookupError when the block has no source that doclive
+        edits, and StaleBuild when the source changed after the page was
+        built, so that its line numbers may be those of another text.
+        """
+        sidecar = self.build / "_doclive" / f"{page}.json"
+        if not sidecar.is_file():
+            raise LookupError("the build of this page marked no blocks")
+        blocks = json.loads(sidecar.read_text())
+        if not 0 <= n < len(blocks):
+            raise LookupError("the page has no such block")
+        source = blocks[n]["source"]
+        file, _, name = source.partition(DOCSTRING_OF)
+        path = Path(file).resolve()
+        if not (path.is_relative_to(self.docs) or path.is_relative_to(self.python)):
+            raise LookupError("the text of this block is not in the project")
+        if path.stat().st_mtime > sidecar.stat().st_mtime:
+            raise StaleBuild()
+        qualname = None
+        if name:
+            module = ".".join(path.relative_to(self.python).with_suffix("").parts)
+            module = module.removesuffix(".__init__")
+            if name != module and not name.startswith(module + "."):
+                raise LookupError("the text of this block is not in the project")
+            qualname = name[len(module) + 1 :]
+        try:
+            whole = self.current_text(self.rel(path), qualname)
+        except KeyError:
+            raise LookupError("the text of this block is not in the project") from None
+        lines = whole.split("\n")
+        start = blocks[n]["line"]
+        later = [
+            b["line"] for b in blocks if b["source"] == source and b["line"] > start
+        ]
+        end = block_end(lines, start, blocks[n]["kind"], min(later, default=None))
+        return {
+            "path": self.rel(path),
+            "qualname": qualname,
+            "start": start,
+            "end": end,
+            "text": "\n".join(lines[start - 1 : end]),
+        }
+
+    def save_block(
+        self, rel: str, qualname: str | None, start: int, end: int, base: str, text: str
+    ) -> None:
+        whole = self.current_text(rel, qualname)
+        self.save(rel, qualname, whole, replace_lines(whole, start, end, base, text))
+
     # --- The build ---
 
     def run_build(self, full: bool) -> dict:
         with self.build_lock:
             started = time.monotonic()
-            args = [str(self.sphinx), "-q", str(self.docs), str(self.build)]
+            args = ["-q", str(self.docs), str(self.build)]
             if full:
-                args.insert(1, "-E")
+                args.insert(0, "-E")
+            python = self.sphinx.parent / "python"
+            if python.exists():
+                args = [str(python), "-c", BOOT, str(SPHINXEXT), *args]
+            else:
+                # Without the Python of the project the site is built as it
+                # is, and no block of it can be edited in place.
+                args = [str(self.sphinx), *args]
             done = subprocess.run(
                 args, cwd=self.root, capture_output=True, text=True, check=False
             )
@@ -153,6 +229,10 @@ class Project:
                 "id": self.last_build["id"] + 1,
             }
             return self.last_build
+
+
+class StaleBuild(Exception):
+    pass
 
 
 class Conflict(Exception):
@@ -292,6 +372,17 @@ def make_handler(project: Project, hub: Hub, messages: Messages):
                 self.send_file(STATIC / "index.html")
             elif url.path == "/api/source":
                 self.send_json(project.sources(query.get("page", ["index"])[0]))
+            elif url.path == "/api/block":
+                try:
+                    block = project.block(
+                        query.get("page", ["index"])[0], int(query.get("n", ["-1"])[0])
+                    )
+                except StaleBuild:
+                    self.send_json({"error": "stale"}, HTTPStatus.CONFLICT)
+                except LookupError as error:
+                    self.send_json({"error": str(error)}, HTTPStatus.NOT_FOUND)
+                else:
+                    self.send_json(block)
             elif url.path == "/api/messages":
                 self.send_json(messages.all())
             elif url.path == "/api/build":
@@ -328,6 +419,18 @@ def make_handler(project: Project, hub: Hub, messages: Messages):
                     self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
                 else:
                     self.send_json({"text": text})
+            elif url.path == "/api/save_block":
+                try:
+                    project.save_block(
+                        body["path"], body.get("qualname"), body["start"],
+                        body["end"], body["base"], body["text"],
+                    )
+                except LookupError as error:
+                    self.send_json({"error": str(error)}, HTTPStatus.CONFLICT)
+                except (KeyError, ValueError, PermissionError) as error:
+                    self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                else:
+                    self.send_json({"ok": True})
             elif url.path == "/api/messages":
                 author = body.get("from", "owner")
                 message = messages.add(author, body["text"], body.get("context"))
