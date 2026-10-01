@@ -85,6 +85,8 @@ body.source #frame { visibility: hidden; }
   border-left: 1px solid var(--line); background: var(--panel);
 }
 #chat h2 { font-size: 13px; margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-weight: 600; }
+#listening { font-weight: 400; margin-left: 6px; }
+#listening.on { color: var(--good); }
 #log { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .msg { border-radius: 10px; padding: 8px 10px; background: var(--theirs); }
 .msg.owner { background: var(--mine); }
@@ -117,7 +119,7 @@ body.source #frame { visibility: hidden; }
   <div id="buildlog"></div>
 </main>
 <aside id="chat">
-  <h2>Conversation with Claudia</h2>
+  <h2>Conversation with Claudia <span id="listening"></span></h2>
   <div id="log"></div>
   <div id="compose">
     <div id="context"></div>
@@ -213,6 +215,32 @@ const FRAME_CSS = `
   border: 1px solid var(--color-background-border, #ccc); background: transparent; color: inherit;
 }
 .dl-bar button.dl-save { background: var(--color-brand-primary, #2f5fd0); color: #fff; border-color: transparent; }
+.dl-actions { display: inline-flex; gap: .35rem; padding-right: .5rem; margin-right: .15rem; border-right: 1px solid var(--color-background-border, #ddd); }
+.dl-bar button:disabled { opacity: .4; cursor: default; }
+.dl-ask { display: none; padding: 0 .75rem .5rem; }
+.dl-ask.open { display: block; }
+.dl-ask input {
+  width: 100%; box-sizing: border-box; padding: .35rem .5rem; border-radius: 6px;
+  border: 1px solid var(--color-background-border, #ccc); background: var(--color-background-primary, #fff);
+  color: var(--color-foreground-primary, #111); font: .8rem var(--font-stack, sans-serif);
+}
+.dl-answer {
+  display: none; border-top: 1px solid var(--color-background-border, #ddd); padding: .5rem .75rem .6rem;
+  font: .8rem/1.5 var(--font-stack, sans-serif); color: var(--color-foreground-primary, #111);
+}
+.dl-answer.open { display: block; }
+.dl-answer .dl-head { color: var(--color-foreground-muted, #666); font-size: .75rem; margin-bottom: .3rem; }
+.dl-answer .dl-head b { color: var(--color-foreground-primary, #111); }
+.dl-answer .dl-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.dl-answer .dl-text.dl-source { font: .85rem/1.5 var(--font-stack--monospace, monospace); }
+.dl-answer ins { background: rgba(46, 160, 67, .25); text-decoration: none; border-radius: 3px; }
+.dl-answer del { background: rgba(248, 81, 73, .22); border-radius: 3px; }
+.dl-answer .dl-buttons { display: flex; gap: .4rem; margin-top: .5rem; }
+.dl-answer button {
+  font: inherit; font-size: .75rem; padding: .15rem .6rem; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--color-background-border, #ccc); background: transparent; color: inherit;
+}
+.dl-answer button.dl-accept { background: var(--color-brand-primary, #2f5fd0); color: #fff; border-color: transparent; }
 .dl-flash {
   position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 99;
   background: #222; color: #fff; padding: .5rem .8rem; border-radius: 8px;
@@ -304,8 +332,24 @@ async function openBlock(el) {
   const saveButton = doc.createElement("button");
   saveButton.className = "dl-save";
   saveButton.textContent = "Save (\u2318\u21B5)";
-  bar.append(where, status, cancelButton, saveButton);
-  box.append(area, bar);
+  const actions = doc.createElement("span");
+  actions.className = "dl-actions";
+  const correctButton = doc.createElement("button");
+  correctButton.textContent = "Correct English";
+  const suggestButton = doc.createElement("button");
+  suggestButton.textContent = "Suggest";
+  const askButton = doc.createElement("button");
+  askButton.textContent = "Ask\u2026";
+  actions.append(correctButton, suggestButton, askButton);
+  bar.append(where, status, actions, cancelButton, saveButton);
+  const askRow = doc.createElement("div");
+  askRow.className = "dl-ask";
+  const askInput = doc.createElement("input");
+  askInput.placeholder = "What should Claudia do with this block? Enter sends, Esc closes.";
+  askRow.append(askInput);
+  const answer = doc.createElement("div");
+  answer.className = "dl-answer";
+  box.append(area, askRow, bar, answer);
   el.before(box);
   el.dataset.dlEditing = "1";
   el.style.display = "none";
@@ -316,7 +360,98 @@ async function openBlock(el) {
   area.focus();
   updateContext();
 
+  const closeAnswer = () => { answer.classList.remove("open"); answer.replaceChildren(); };
+  const head = label => {
+    const h = doc.createElement("div");
+    h.className = "dl-head";
+    const b = doc.createElement("b");
+    b.textContent = "Claudia";
+    h.append(b, " \u00B7 " + label);
+    return h;
+  };
+  const buttons = (...pairs) => {
+    const row = doc.createElement("div");
+    row.className = "dl-buttons";
+    for (const [label, action, accept] of pairs) {
+      const b = doc.createElement("button");
+      b.textContent = label;
+      if (accept) b.className = "dl-accept";
+      b.addEventListener("click", action);
+      row.append(b);
+    }
+    return row;
+  };
+  const LABELS = { correct: "the English, corrected", suggest: "suggestions", ask: "what you asked" };
+
+  // Send the block as it is now to Claude, and wait for the answer under it.
+  const request = async (kind, instruction) => {
+    if (ed.state !== "open") return;
+    clearInterval(ed.timer);
+    const asked = area.value;
+    const res = await fetch("/api/requests", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind, instruction, page, path: block.path, qualname: block.qualname,
+        lines: [block.start, block.end], text: asked,
+      }),
+    });
+    const body = await res.json();
+    ed.pending = { id: body.id, asked, kind };
+    const since = Date.now();
+    const waiting = doc.createElement("div");
+    waiting.className = "dl-head";
+    const tick = () => {
+      waiting.textContent = listening
+        ? `Claudia is reading\u2026 ${Math.round((Date.now() - since) / 1000)} s`
+        : "Claudia is not listening: no session of Claude is watching doclive, so nothing will answer this.";
+    };
+    tick();
+    ed.timer = setInterval(tick, 1000);
+    answer.replaceChildren(waiting, buttons(["Stop waiting", () => { ed.pending = null; clearInterval(ed.timer); closeAnswer(); }]));
+    answer.classList.add("open");
+  };
+
+  ed.showAnswer = ev => {
+    clearInterval(ed.timer);
+    const pending = ed.pending;
+    ed.pending = null;
+    answer.replaceChildren(head(LABELS[pending.kind]));
+    answer.classList.add("open");
+    const text = doc.createElement("div");
+    text.className = "dl-text";
+    if (ev.kind === "note") {
+      text.textContent = ev.text;
+      answer.append(text, buttons(["Dismiss", closeAnswer]));
+      return;
+    }
+    if (area.value !== pending.asked) {
+      const moved = doc.createElement("div");
+      moved.className = "dl-head";
+      moved.textContent = "You changed the text after asking. The changes are marked against your text as it is now.";
+      answer.append(moved);
+    }
+    if (ev.text === area.value) {
+      text.textContent = "Nothing to change: the text stays as it is.";
+      answer.append(text, buttons(["Dismiss", closeAnswer]));
+      return;
+    }
+    text.classList.add("dl-source");
+    const marked = markChanges(doc, area.value, ev.text);
+    text.append(marked.fragment);
+    if (!marked.changed) {
+      const only = doc.createElement("div");
+      only.className = "dl-head";
+      only.textContent = "Only the line breaks change.";
+      answer.append(only);
+    }
+    answer.append(text, buttons(
+      ["Accept", () => { area.value = ev.text; fit(); closeAnswer(); area.focus(); }, true],
+      ["Keep mine", () => { closeAnswer(); area.focus(); }],
+    ));
+  };
+
   const close = () => {
+    clearInterval(ed.timer);
     box.remove();
     el.style.display = "";
     delete el.dataset.dlEditing;
@@ -344,6 +479,11 @@ async function openBlock(el) {
       ed.state = "saved";
       area.readOnly = true;
       saveButton.disabled = cancelButton.disabled = true;
+      correctButton.disabled = suggestButton.disabled = askButton.disabled = true;
+      clearInterval(ed.timer);
+      ed.pending = null;
+      closeAnswer();
+      askRow.classList.remove("open");
       status.textContent = "saved; rendering";
     } else {
       const body = await saved.json();
@@ -360,6 +500,59 @@ async function openBlock(el) {
   });
   saveButton.addEventListener("click", save);
   cancelButton.addEventListener("click", cancel);
+  correctButton.addEventListener("click", () => request("correct"));
+  suggestButton.addEventListener("click", () => request("suggest"));
+  askButton.addEventListener("click", () => {
+    askRow.classList.toggle("open");
+    if (askRow.classList.contains("open")) askInput.focus();
+  });
+  askInput.addEventListener("keydown", e => {
+    if (e.key === "Enter" && askInput.value.trim()) {
+      e.preventDefault();
+      request("ask", askInput.value.trim());
+      askInput.value = "";
+      askRow.classList.remove("open");
+      area.focus();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      askRow.classList.remove("open");
+      area.focus();
+    }
+  });
+}
+
+// The new text with what changed from the old marked: words taken out
+// struck through, words put in highlighted. Words are compared, so a line
+// broken at another place is no change.
+function markChanges(doc, oldText, newText) {
+  const a = oldText.split(/\s+/).filter(Boolean);
+  const tokens = newText.match(/\s*\S+/g) || [];
+  const b = tokens.map(t => t.trim());
+  const n = a.length, m = b.length;
+  const L = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const fragment = doc.createDocumentFragment();
+  const mark = (tag, word) => { const el = doc.createElement(tag); el.textContent = word; return el; };
+  let i = 0, j = 0, changed = false;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) {
+      fragment.append(tokens[j]); i++; j++;
+    } else if (j < m && (i === n || L[i][j + 1] >= L[i + 1][j])) {
+      fragment.append(tokens[j].slice(0, tokens[j].length - b[j].length), mark("ins", b[j]));
+      j++; changed = true;
+    } else {
+      fragment.append(" ", mark("del", a[i]));
+      i++; changed = true;
+    }
+  }
+  return { fragment, changed };
+}
+
+function onAnswer(ev) {
+  const ed = [...blockEditors].find(e => e.pending && e.pending.id === ev.id);
+  if (ed) ed.showAnswer(ev);
 }
 
 function reloadFrame() {
@@ -648,13 +841,24 @@ $("#input").addEventListener("keydown", e => {
 
 // ---- Events from the server ----
 
+let listening = false;
+async function checkListening() {
+  try { listening = (await (await fetch("/api/status")).json()).listening; } catch { listening = false; }
+  const el = $("#listening");
+  el.className = listening ? "on" : "";
+  el.textContent = listening ? "\u25CF listening" : "\u25CB not listening";
+}
+
 async function start() {
+  checkListening();
+  setInterval(checkListening, 4000);
   for (const m of await (await fetch("/api/messages")).json()) addMessage(m);
   showBuild(await (await fetch("/api/build")).json());
   const events = new EventSource("/api/events");
   events.onmessage = e => {
     const ev = JSON.parse(e.data);
     if (ev.type === "message") addMessage(ev.message);
+    else if (ev.type === "answer") onAnswer(ev);
     else if (ev.type === "changed") refreshFromDisk(ev.paths);
     else if (ev.type === "building") showBuild(ev);
     else if (ev.type === "built") {

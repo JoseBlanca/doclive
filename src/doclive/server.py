@@ -298,6 +298,58 @@ class Messages:
                 self.hub.publish({"type": "message", "message": json.loads(line)})
 
 
+class Requests:
+    """What the owner asks Claude to do with a block that is being edited:
+    correct its English, suggest, or follow an instruction. A request is a
+    line of a file that Claude listens to, and its answer comes back
+    through the server and is sent to the page."""
+
+    LISTENING_FOR = 10  # seconds a mark of the listener is good for
+
+    def __init__(self, state: Path, hub: Hub):
+        self.path = state / "requests.jsonl"
+        self.heartbeat = state / "listening"
+        self.hub = hub
+        self.lock = threading.Lock()
+        self.path.touch()
+        self.count = 0
+
+    def add(self, body: dict) -> str:
+        with self.lock:
+            self.count += 1
+            request = {
+                "id": f"r{int(time.time())}-{self.count}",
+                "time": datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
+                "kind": body["kind"],
+                "instruction": body.get("instruction"),
+                "page": body.get("page"),
+                "path": body.get("path"),
+                "qualname": body.get("qualname"),
+                "lines": body.get("lines"),
+                "text": body["text"],
+            }
+            with self.path.open("a") as out:
+                out.write(json.dumps(request, ensure_ascii=False) + "\n")
+        return request["id"]
+
+    def answer(self, body: dict) -> None:
+        self.hub.publish(
+            {
+                "type": "answer",
+                "id": body["id"],
+                "kind": body["kind"],
+                "text": body["text"],
+            }
+        )
+
+    def listening(self) -> bool:
+        try:
+            age = time.time() - self.heartbeat.stat().st_mtime
+        except FileNotFoundError:
+            return False
+        return age < self.LISTENING_FOR
+
+
 def _fingerprints(project: Project) -> dict[Path, float]:
     found = {}
     for pattern in ("**/*.md", "**/*.rst", "**/*.py", "**/*.html", "**/*.css"):
@@ -334,7 +386,7 @@ def watch(project: Project, hub: Hub, messages: Messages) -> None:
         hub.publish({"type": "built", **project.run_build(full)})
 
 
-def make_handler(project: Project, hub: Hub, messages: Messages):
+def make_handler(project: Project, hub: Hub, messages: Messages, requests: Requests):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -387,6 +439,8 @@ def make_handler(project: Project, hub: Hub, messages: Messages):
                 self.send_json(messages.all())
             elif url.path == "/api/build":
                 self.send_json(project.last_build)
+            elif url.path == "/api/status":
+                self.send_json({"listening": requests.listening()})
             elif url.path == "/api/events":
                 self.events()
             elif url.path.startswith("/site/"):
@@ -431,6 +485,16 @@ def make_handler(project: Project, hub: Hub, messages: Messages):
                     self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
                 else:
                     self.send_json({"ok": True})
+            elif url.path == "/api/requests":
+                if body.get("kind") not in ("correct", "suggest", "ask"):
+                    self.send_json({"error": "no such request"}, HTTPStatus.BAD_REQUEST)
+                else:
+                    self.send_json(
+                        {"id": requests.add(body), "listening": requests.listening()}
+                    )
+            elif url.path == "/api/answers":
+                requests.answer(body)
+                self.send_json({"ok": True})
             elif url.path == "/api/messages":
                 author = body.get("from", "owner")
                 message = messages.add(author, body["text"], body.get("context"))
@@ -470,6 +534,7 @@ def serve(
 ) -> None:
     hub = Hub()
     messages = Messages(messages_path, hub)
+    requests = Requests(messages_path.parent, hub)
     print(f"building {project.docs} ...", flush=True)
     result = project.run_build(full=True)
     print(
@@ -477,10 +542,10 @@ def serve(
         flush=True,
     )
     threading.Thread(target=watch, args=(project, hub, messages), daemon=True).start()
-    server = ThreadingHTTPServer((host, port), make_handler(project, hub, messages))
+    server = ThreadingHTTPServer((host, port), make_handler(project, hub, messages, requests))
     server.daemon_threads = True
     print(f"doclive at http://{host}:{port}/", flush=True)
-    print(f"messages in {messages_path}", flush=True)
+    print(f"state in {messages_path.parent}", flush=True)
     server.serve_forever()
 
 

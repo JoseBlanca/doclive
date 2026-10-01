@@ -65,17 +65,41 @@ Sphinx does not know which pages a docstring appears on. On popnei's site,
 eight reference pages and two written pages, a full rebuild took 1.7 to
 1.9 s on an Apple M-series Mac on 30 September 2026.
 
+## Asking Claude about a block
+
+The editor of a block has three buttons that send the block, as it is in
+the editor at that moment, to Claude:
+
+- **Correct English** comes back as the corrected text, with the words
+  taken out struck through and the words put in highlighted.
+- **Suggest** comes back as a note to read and dismiss.
+- **Ask** takes one line of instruction, "shorter", and comes back as a
+  proposed text marked like a correction.
+
+The answer appears in a cell under the editor. Accept puts a proposed text
+into the editor and saves nothing: Save is the only action that writes the
+file. The header of the conversation says whether a session of Claude is
+listening, and a request made when none is gets no answer.
+
 ## For Claude
 
-Every line of the messages file is a message:
-`{"time", "from": "owner" | "claudia", "text", "context": {"page", "mode",
-"object", "path"}}`. Watch it for the owner's messages with
+Listen from the session, as a Monitor, with the Python of doclive's own
+environment and the state directory that the server prints when it starts:
 
-    tail -n0 -f <messages file> | grep --line-buffered '"from": "owner"'
+    ~/devel/doclive/.venv/bin/python -m doclive.agent listen <state directory>
 
-and answer through the server, so that the panel shows the answer at once:
+Each line it prints is a message of the owner from the panel,
+`{"from": "owner", "text", "context": {"page", "mode", "object", "path",
+"lines"}}`, or a request from a block, `{"id", "kind": "correct" |
+"suggest" | "ask", "instruction", "page", "path", "qualname", "lines",
+"text"}`. Answer a request with the text on standard input, `rewrite` for
+a text that replaces the block's and `note` for one that is read:
 
-    curl -s localhost:8765/api/messages -H 'Content-Type: application/json' \
-      -d '{"from": "claudia", "text": "..."}'
+    ~/devel/doclive/.venv/bin/python -m doclive.agent answer <id> rewrite <<'EOF'
+    the new text of the block
+    EOF
 
-Edit the source files directly; the page picks the change up.
+and write in the panel with `python -m doclive.agent say`, the same way.
+A `rewrite` is the source of the block, Markdown or reStructuredText as the
+block is, wrapped as its file is. Edit the source files directly for
+anything else; the page picks the change up.
