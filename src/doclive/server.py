@@ -313,6 +313,8 @@ class Requests:
         self.lock = threading.Lock()
         self.path.touch()
         self.count = 0
+        self.answers: dict[str, dict] = {}
+        self.client_log = state / "client.log"
 
     def add(self, body: dict) -> str:
         with self.lock:
@@ -333,14 +335,22 @@ class Requests:
         return request["id"]
 
     def answer(self, body: dict) -> None:
-        self.hub.publish(
-            {
-                "type": "answer",
-                "id": body["id"],
-                "kind": body["kind"],
-                "text": body["text"],
-            }
-        )
+        """Keep the answer, for the page to ask for, and send it to the
+        pages that are listening: a page gets it by whichever comes first."""
+        answer = {
+            "type": "answer",
+            "id": body["id"],
+            "kind": body["kind"],
+            "text": body["text"],
+        }
+        self.answers[body["id"]] = answer
+        self.hub.publish(answer)
+
+    def log(self, text: str) -> None:
+        """An error of the page, which only the owner's browser sees."""
+        stamp = datetime.now(UTC).astimezone().isoformat(timespec="seconds")
+        with self.lock, self.client_log.open("a") as out:
+            out.write(f"{stamp} {text}\n")
 
     def listening(self) -> bool:
         try:
@@ -439,6 +449,9 @@ def make_handler(project: Project, hub: Hub, messages: Messages, requests: Reque
                 self.send_json(messages.all())
             elif url.path == "/api/build":
                 self.send_json(project.last_build)
+            elif url.path == "/api/answer":
+                found = requests.answers.get(query.get("id", [""])[0])
+                self.send_json(found or {"type": "waiting"})
             elif url.path == "/api/status":
                 self.send_json({"listening": requests.listening()})
             elif url.path == "/api/events":
@@ -492,6 +505,9 @@ def make_handler(project: Project, hub: Hub, messages: Messages, requests: Reque
                     self.send_json(
                         {"id": requests.add(body), "listening": requests.listening()}
                     )
+            elif url.path == "/api/log":
+                requests.log(str(body.get("text", ""))[:2000])
+                self.send_json({"ok": True})
             elif url.path == "/api/answers":
                 requests.answer(body)
                 self.send_json({"ok": True})

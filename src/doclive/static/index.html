@@ -405,8 +405,16 @@ async function openBlock(el) {
         ? `Claudia is reading\u2026 ${Math.round((Date.now() - since) / 1000)} s`
         : "Claudia is not listening: no session of Claude is watching doclive, so nothing will answer this.";
     };
+    // The answer is pushed to the page, and the page also asks for it:
+    // whichever comes first shows it.
+    let turns = 0;
+    const poll = async () => {
+      if (++turns % 2 || !ed.pending || ed.pending.id !== body.id) return;
+      const found = await (await fetch("/api/answer?id=" + encodeURIComponent(body.id))).json();
+      if (found.type === "answer") onAnswer(found);
+    };
     tick();
-    ed.timer = setInterval(tick, 1000);
+    ed.timer = setInterval(() => { tick(); poll(); }, 1000);
     answer.replaceChildren(waiting, buttons(["Stop waiting", () => { ed.pending = null; clearInterval(ed.timer); closeAnswer(); }]));
     answer.classList.add("open");
   };
@@ -552,8 +560,19 @@ function markChanges(doc, oldText, newText) {
 
 function onAnswer(ev) {
   const ed = [...blockEditors].find(e => e.pending && e.pending.id === ev.id);
-  if (ed) ed.showAnswer(ev);
+  if (!ed) { report(`answer ${ev.id} found no editor waiting; ${blockEditors.size} open`); return; }
+  try { ed.showAnswer(ev); } catch (error) { report("showAnswer: " + (error.stack || error)); }
 }
+
+// Tell the server what went wrong in this browser, which nobody else sees.
+function report(text) {
+  fetch("/api/log", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: navigator.userAgent.split(" ").pop() + " " + text }),
+  }).catch(() => {});
+}
+window.addEventListener("error", e => report(`${e.message} at ${e.filename}:${e.lineno}`));
+window.addEventListener("unhandledrejection", e => report("rejection: " + (e.reason && (e.reason.stack || e.reason))));
 
 function reloadFrame() {
   try { restoreScroll = frame.contentWindow.scrollY; } catch {}
