@@ -1,5 +1,5 @@
 """doclive: edit a Sphinx site and the docstrings it is built from, in one
-browser tab, with a conversation with Claude beside it."""
+browser tab, and ask Claude about the block being edited."""
 
 import argparse
 from pathlib import Path
@@ -12,7 +12,7 @@ def main() -> None:
         prog="doclive",
         description=(
             "Serve a Sphinx site with an editor of its Markdown pages and of the "
-            "docstrings its automodule directives document, and a message panel."
+            "docstrings its automodule directives document."
         ),
     )
     parser.add_argument("project", type=Path, help="the root of the documented project")
@@ -32,9 +32,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
-        "--messages",
+        "--state",
         type=Path,
-        help="the file of the conversation, by default under ~/.doclive/",
+        help="the directory of the requests to Claude, by default under ~/.doclive/",
     )
     args = parser.parse_args()
 
@@ -47,7 +47,5 @@ def main() -> None:
         python=(root / args.python).resolve(),
         sphinx=root / args.sphinx,
     )
-    messages = args.messages or (
-        Path.home() / ".doclive" / project_slug(root) / "messages.jsonl"
-    )
-    serve(project, messages, args.host, args.port)
+    state = args.state or (Path.home() / ".doclive" / project_slug(root))
+    serve(project, state, args.host, args.port)

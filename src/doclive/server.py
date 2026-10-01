@@ -1,5 +1,6 @@
 """The local server: the rendered site, the sources behind each page, the
-saves, the rebuilds, and the messages between the owner and Claude.
+saves, the rebuilds, and the requests the owner makes to Claude from a
+block.
 
 Everything is in the standard library. The server builds the site with
 the Sphinx of the documented project, in a process of its own for each
@@ -256,48 +257,6 @@ class Hub:
             self.cond.notify_all()
 
 
-class Messages:
-    """The conversation, one JSON object per line in a file that Claude
-    reads and writes as well."""
-
-    def __init__(self, path: Path, hub: Hub):
-        self.path = path
-        self.hub = hub
-        self.lock = threading.Lock()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
-        self.offset = path.stat().st_size
-
-    def all(self) -> list[dict]:
-        return [json.loads(line) for line in self.path.read_text().splitlines() if line]
-
-    def add(self, author: str, text: str, context: dict | None) -> dict:
-        message = {
-            "time": datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
-            "from": author,
-            "text": text,
-            "context": context or {},
-        }
-        with self.lock, self.path.open("a") as out:
-            out.write(json.dumps(message, ensure_ascii=False) + "\n")
-        return message
-
-    def poll(self) -> None:
-        """Publish the lines added to the file since the last poll, whoever
-        wrote them."""
-        size = self.path.stat().st_size
-        if size <= self.offset:
-            self.offset = min(self.offset, size)
-            return
-        with self.path.open() as fh:
-            fh.seek(self.offset)
-            chunk = fh.read()
-        self.offset = size
-        for line in chunk.splitlines():
-            if line.strip():
-                self.hub.publish({"type": "message", "message": json.loads(line)})
-
-
 class Requests:
     """What the owner asks Claude to do with a block that is being edited:
     correct its English, suggest, or follow an instruction. A request is a
@@ -371,13 +330,12 @@ def _fingerprints(project: Project) -> dict[Path, float]:
     return found
 
 
-def watch(project: Project, hub: Hub, messages: Messages) -> None:
+def watch(project: Project, hub: Hub) -> None:
     """Rebuild when a source changes, whoever changed it, and tell the
     browsers which files changed and when the site is built again."""
     seen = _fingerprints(project)
     while True:
         time.sleep(0.4)
-        messages.poll()
         now = _fingerprints(project)
         changed = [p for p in now.keys() | seen.keys() if now.get(p) != seen.get(p)]
         if not changed:
@@ -396,7 +354,7 @@ def watch(project: Project, hub: Hub, messages: Messages) -> None:
         hub.publish({"type": "built", **project.run_build(full)})
 
 
-def make_handler(project: Project, hub: Hub, messages: Messages, requests: Requests):
+def make_handler(project: Project, hub: Hub, requests: Requests):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -445,8 +403,6 @@ def make_handler(project: Project, hub: Hub, messages: Messages, requests: Reque
                     self.send_json({"error": str(error)}, HTTPStatus.NOT_FOUND)
                 else:
                     self.send_json(block)
-            elif url.path == "/api/messages":
-                self.send_json(messages.all())
             elif url.path == "/api/build":
                 self.send_json(project.last_build)
             elif url.path == "/api/answer":
@@ -511,10 +467,6 @@ def make_handler(project: Project, hub: Hub, messages: Messages, requests: Reque
             elif url.path == "/api/answers":
                 requests.answer(body)
                 self.send_json({"ok": True})
-            elif url.path == "/api/messages":
-                author = body.get("from", "owner")
-                message = messages.add(author, body["text"], body.get("context"))
-                self.send_json(message)
             else:
                 self.send(HTTPStatus.NOT_FOUND, b"not found", "text/plain")
 
@@ -545,23 +497,21 @@ def make_handler(project: Project, hub: Hub, messages: Messages, requests: Reque
     return Handler
 
 
-def serve(
-    project: Project, messages_path: Path, host: str, port: int
-) -> None:
+def serve(project: Project, state: Path, host: str, port: int) -> None:
     hub = Hub()
-    messages = Messages(messages_path, hub)
-    requests = Requests(messages_path.parent, hub)
+    state.mkdir(parents=True, exist_ok=True)
+    requests = Requests(state, hub)
     print(f"building {project.docs} ...", flush=True)
     result = project.run_build(full=True)
     print(
         f"built in {result['seconds']} s" if result["ok"] else result["log"],
         flush=True,
     )
-    threading.Thread(target=watch, args=(project, hub, messages), daemon=True).start()
-    server = ThreadingHTTPServer((host, port), make_handler(project, hub, messages, requests))
+    threading.Thread(target=watch, args=(project, hub), daemon=True).start()
+    server = ThreadingHTTPServer((host, port), make_handler(project, hub, requests))
     server.daemon_threads = True
     print(f"doclive at http://{host}:{port}/", flush=True)
-    print(f"state in {messages_path.parent}", flush=True)
+    print(f"state in {state}", flush=True)
     server.serve_forever()
 
 

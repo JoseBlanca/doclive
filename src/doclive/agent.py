@@ -2,16 +2,14 @@
 
     python -m doclive.agent listen <state directory>
     python -m doclive.agent answer <request id> rewrite|note   < text
-    python -m doclive.agent say                                 < text
 
-`listen` prints one line for each message of the owner and for each
-request made from a block that is being edited, as the JSON object the
-server wrote, and it marks the state directory every second, which is how
-the page knows that somebody is listening. It ends when it is killed, and
-the mark goes stale with it.
+`listen` prints one line for each request made from a block that is being
+edited, as the JSON object the server wrote, and it marks the state
+directory every second, which is how the page knows that somebody is
+listening. It ends when it is killed, and the mark goes stale with it.
 
-`answer` and `say` send the text on standard input to the server, so that
-no text has to be quoted for a shell.
+`answer` sends the text on standard input to the server, so that no text
+has to be quoted for a shell.
 """
 
 import json
@@ -21,7 +19,7 @@ import urllib.request
 from pathlib import Path
 
 HEARTBEAT = "listening"
-WATCHED = ("messages.jsonl", "requests.jsonl")
+WATCHED = ("requests.jsonl",)
 
 
 def listen(state: Path) -> None:
@@ -47,11 +45,8 @@ def listen(state: Path) -> None:
             complete = chunk[: chunk.rfind(b"\n") + 1]
             offsets[name] += len(complete)
             for line in complete.decode().splitlines():
-                if not line.strip():
-                    continue
-                if name == "messages.jsonl" and json.loads(line).get("from") != "owner":
-                    continue
-                print(line, flush=True)
+                if line.strip():
+                    print(line, flush=True)
         time.sleep(1)
 
 
@@ -77,9 +72,6 @@ def main(argv: list[str]) -> None:
         case ["answer", request_id, ("rewrite" | "note") as kind]:
             text = sys.stdin.read().strip("\n")
             post(port, "/api/answers", {"id": request_id, "kind": kind, "text": text})
-        case ["say"]:
-            text = sys.stdin.read().strip("\n")
-            post(port, "/api/messages", {"from": "claudia", "text": text})
         case _:
             sys.exit(__doc__)
 

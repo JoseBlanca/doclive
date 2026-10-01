@@ -1,9 +1,9 @@
 # doclive
 
-doclive serves a Sphinx site locally in one browser tab with three parts:
-the rendered site, an editor of the sources behind the page on screen, and
-a conversation with Claude. A toggle switches the page between Rendered
-and Source.
+doclive serves a Sphinx site locally in one browser tab, where the site is
+read and edited: a block of the rendered page is edited where it stands,
+Claude can be asked about it from there, and a toggle switches the page
+to an editor of all the sources behind it.
 
 In Rendered, a paragraph, a list, a code block or a title can be edited
 where it stands: double-click it, or click the pencil that appears beside
@@ -33,12 +33,6 @@ rendered page at the same place, and updates the editors that have no
 unsaved text. When a file changes under an editor that has unsaved text,
 the editor offers to take the file's version or to keep and save its own.
 
-The message panel writes to a file, one JSON object per line, which Claude
-watches from its session. Claude's answers are written to the same file and
-appear in the panel. Each message carries the page, and the object on
-screen or being edited, so that "shorter" is enough to say what should be
-shorter.
-
 ## Running it
 
 doclive has no dependencies of its own. The site is built with the
@@ -51,13 +45,13 @@ $ uv run doclive ~/devel/popnei/.claude/worktrees/docs-sphinx
 building .../docs/api ...
 built in 1.95 s
 doclive at http://127.0.0.1:8765/
-messages in /Users/jose/.doclive/docs-sphinx-f2db24e7/messages.jsonl
+state in /Users/jose/.doclive/docs-sphinx-f2db24e7
 ```
 
 The options give the Sphinx source directory (`--docs`, `docs/api` by
 default), the directory that holds the package (`--python`, `python`), the
 `sphinx-build` to run (`--sphinx`, `.venv/bin/sphinx-build`), the port
-(`--port`, 8765) and the file of the messages (`--messages`). All the paths
+(`--port`, 8765) and the directory of the requests (`--state`). All the paths
 are relative to the project root.
 
 A change to a docstring needs a full rebuild, `sphinx-build -E`, because
@@ -78,8 +72,8 @@ the editor at that moment, to Claude:
 
 The answer appears in a cell under the editor. Accept puts a proposed text
 into the editor and saves nothing: Save is the only action that writes the
-file. The header of the conversation says whether a session of Claude is
-listening, and a request made when none is gets no answer.
+file. The bar at the top says whether a session of Claude is listening,
+and a request made when none is gets no answer.
 
 ## For Claude
 
@@ -88,9 +82,7 @@ environment and the state directory that the server prints when it starts:
 
     ~/devel/doclive/.venv/bin/python -m doclive.agent listen <state directory>
 
-Each line it prints is a message of the owner from the panel,
-`{"from": "owner", "text", "context": {"page", "mode", "object", "path",
-"lines"}}`, or a request from a block, `{"id", "kind": "correct" |
+Each line it prints is a request from a block, `{"id", "kind": "correct" |
 "suggest" | "ask", "instruction", "page", "path", "qualname", "lines",
 "text"}`. Answer a request with the text on standard input, `rewrite` for
 a text that replaces the block's and `note` for one that is read:
@@ -99,7 +91,6 @@ a text that replaces the block's and `note` for one that is read:
     the new text of the block
     EOF
 
-and write in the panel with `python -m doclive.agent say`, the same way.
 A `rewrite` is the source of the block, Markdown or reStructuredText as the
 block is, wrapped as its file is. Edit the source files directly for
 anything else; the page picks the change up.
