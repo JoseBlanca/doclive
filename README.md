@@ -10,7 +10,8 @@ where it stands: double-click it, or click the pencil that appears beside
 it, and the block is replaced by its source, the lines of the Markdown
 file or of the docstring that it was rendered from. Cmd+Enter saves, Esc
 cancels, and when the site is built again, in about 2 s, the page shows
-the block rendered. A rebuild that someone else's change causes while a
+the block rendered. Esc on a saved block closes it at once; it shows its
+old rendering until the new one is built. A rebuild that someone else's change causes while a
 block is open waits until the editor is closed. A signature and the
 sidebar have no text of their own and do not respond.
 

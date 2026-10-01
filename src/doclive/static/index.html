@@ -438,7 +438,9 @@ async function openBlock(el) {
     reloadIfWaiting();
   };
   const cancel = () => {
-    if (ed.state === "saved") return;
+    // A saved block closes at once: it shows its old rendering until the
+    // build of the new one is in, and then the page refreshes.
+    if (ed.state === "saved") { close(); return; }
     if (area.value !== block.text && !doc.defaultView.confirm("Discard your changes to this block?")) return;
     close();
   };
@@ -446,6 +448,8 @@ async function openBlock(el) {
     if (ed.state !== "open") return;
     if (area.value === block.text) { close(); return; }
     status.textContent = "saving";
+    let buildAtSave = 0;
+    try { buildAtSave = (await (await fetch("/api/build")).json()).id; } catch {}
     const saved = await fetch("/api/save_block", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -462,7 +466,8 @@ async function openBlock(el) {
       ed.pending = null;
       closeAnswer();
       askRow.classList.remove("open");
-      status.textContent = "saved; rendering";
+      status.textContent = "saved; rendering (Esc closes)";
+      waitForBuild(buildAtSave);
     } else {
       const body = await saved.json();
       status.textContent = saved.status === 409
@@ -542,6 +547,23 @@ function report(text) {
 }
 window.addEventListener("error", e => report(`${e.message} at ${e.filename}:${e.lineno}`));
 window.addEventListener("unhandledrejection", e => report("rejection: " + (e.reason && (e.reason.stack || e.reason))));
+
+// The page is told when a build is done, and also asks: whichever comes
+// first refreshes it once the build that follows a save is in.
+async function waitForBuild(after) {
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    let build;
+    try { build = await (await fetch("/api/build")).json(); } catch { continue; }
+    if (build.id > after) {
+      showBuild(build);
+      if (!build.ok) return;
+      if ([...blockEditors].some(ed => ed.state === "open")) { pendingReload = true; return; }
+      reloadFrame();
+      return;
+    }
+  }
+}
 
 function reloadFrame() {
   try { restoreScroll = frame.contentWindow.scrollY; } catch {}
